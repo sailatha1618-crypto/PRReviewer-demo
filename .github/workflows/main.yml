@@ -1,0 +1,64 @@
+name: PRReviewer Pro
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Analyze PR Pro
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          base = os.environ["BASE_SHA"]
+          head = os.environ["HEAD_SHA"]
+          diff = subprocess.check_output(["git", "diff", "--unified=0", base, head], text=True)
+          issues = []
+          suggestions = []
+
+          for line in diff.splitlines():
+              if not line.startswith("+") or line.startswith("+++"): continue
+              code = line[1:]
+              if re.search(r'password\s*=\s*["\']|api_key\s*=\s*["\']|secret\s*=\s*["\']', code, re.I):
+                  issues.append("🔴 **Hard-coded Secret** - `password / api_key` direct ga code lo undi. Env variable vadandi.")
+              if re.search(r'\beval\s*\(|\bexec\s*\(', code):
+                  issues.append("🔴 **Unsafe Code Execution** - `eval() / exec()` vadakudadu. Chala dangerous.")
+              if re.search(r'SELECT.*FROM.*\+|f".*SELECT', code, re.I):
+                  issues.append("🟡 **Possible SQL Injection** - SQL query lo direct string concat vadutunnaru.")
+              if "print(" in code and "password" in code.lower():
+                  issues.append("🟡 **Sensitive Data Logging** - Password ni print cheyakudadu.")
+              if re.search(r'TODO|FIXME', code, re.I):
+                  suggestions.append(f"🔵 **TODO Found** - `{code.strip()[:50]}`")
+
+          if not issues and not suggestions:
+              body = "## 🤖 PRReviewer Pro\n\n✅ **Excellent!** No security issues. Code clean ga undi."
+          else:
+              body = "## 🤖 PRReviewer Pro — Code Review Report\n\n"
+              if issues:
+                  body += "### 🚨 Issues Found:\n" + "\n\n".join(f"{i}. {x}" for i,x in enumerate(issues,1))
+              if suggestions:
+                  body += "\n\n### 💡 Suggestions:\n" + "\n".join(f"- {s}" for s in suggestions)
+              body += "\n\n---\n*Fix chesi malli push cheyyandi, nenu malli check chesta.*"
+          
+          open("review.md","w",encoding="utf-8").write(body)
+          print(body)
+          PY
+
+      - name: Post review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr comment "$PR_URL" --body-file review.md
